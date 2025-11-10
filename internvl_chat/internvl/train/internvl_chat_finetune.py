@@ -536,6 +536,7 @@ class LazySupervisedDataset(Dataset):
 
         # Load the video frames using tcs_loader
         # TODO: Load videos without using tcsloader.
+        logger.debug(f'Loading video frames from {str(video_path)}')
         image_list = self.tcs_loader(
             video_path,
             image_type='video',

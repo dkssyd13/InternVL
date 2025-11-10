@@ -184,15 +184,15 @@ def read_frames_folder(
             fp = os.path.join(video_path, image)
             frame = Image.open(fp).convert('RGB')
             frames.append(frame)
-    vlen = len(frames)
+    # vlen = len(frames)
 
-    t_num_frames = np.random.randint(min_num_frames, num_frames + 1)
+    # t_num_frames = np.random.randint(min_num_frames, num_frames + 1)
 
-    if vlen > t_num_frames:
-        frame_indices = get_frame_indices(
-            t_num_frames, vlen, sample=sample, fix_start=fix_start
-        )
-        frames = [frames[i] for i in frame_indices]
+    # if vlen > t_num_frames:
+    #     frame_indices = get_frame_indices(
+    #         t_num_frames, vlen, sample=sample, fix_start=fix_start
+    #     )
+    #     frames = [frames[i] for i in frame_indices]
     return frames
 
 
