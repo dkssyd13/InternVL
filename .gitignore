@@ -172,3 +172,6 @@ data_process/
 
 batchscript-*
 results/
+
+# ignore json files
+*hilab*.json
