@@ -15,6 +15,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from functools import partial
 from typing import Dict, Literal, Optional
+import re
 
 import numpy as np
 
@@ -537,13 +538,14 @@ class LazySupervisedDataset(Dataset):
         # Load the video frames using tcs_loader
         # TODO: Load videos without using tcsloader.
         logger.debug(f'Loading video frames from {str(video_path)}')
-        image_list = self.tcs_loader(
-            video_path,
-            image_type='video',
-            max_num_frames=self.max_num_frame,
-            min_num_frames=self.min_num_frame,
-            sample=self.sampling_method,
-            clip=data_item.get('clip', None))
+        image_list = self.read_video_frames(video_path)
+        # image_list = self.tcs_loader(
+        #     video_path,
+        #     image_type='video',
+        #     max_num_frames=self.max_num_frame,
+        #     min_num_frames=self.min_num_frame,
+        #     sample=self.sampling_method,
+        #     clip=data_item.get('clip', None))
 
         # Generate special tokens for each video frame
         special_tokens = '\n'.join(['Frame-{}: <image>'.format(i + 1) for i in range(len(image_list))])
@@ -578,6 +580,21 @@ class LazySupervisedDataset(Dataset):
             image_flags=torch.tensor([1] * num_patches, dtype=torch.long)
         )
         return ret
+
+    def read_video_frames(self, video_path):
+        frame_paths = list(os.listdir(video_path))
+        image_list = sorted(frame_paths, key=lambda x: self.extract_frame_number(os.path.basename(x)))
+        frames = []
+        for image in image_list:
+            fp = os.path.join(video_path, image)
+            frame = Image.open(fp).convert('RGB')
+            frames.append(frame)
+        return frames
+    
+    def extract_frame_number(self, filename):
+        # Extract the numeric part from the filename using regular expressions
+        match = re.search(r'_(\d+).jpg$', filename)
+        return int(match.group(1)) if match else -1
 
     def pure_text_get_item(self, data_item):
         # Build transformation function
