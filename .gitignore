@@ -175,3 +175,4 @@ results/
 
 # ignore json files
 *hilab*.json
+*hilab*.jsonl
