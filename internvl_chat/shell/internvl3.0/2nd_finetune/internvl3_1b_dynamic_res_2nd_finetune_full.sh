@@ -33,7 +33,7 @@ torchrun \
   --conv_style "internvl2_5" \
   --use_fast_tokenizer False \
   --output_dir ${OUTPUT_DIR} \
-  --meta_path "./shell/data/internvl_1_2_finetune_custom.json" \
+  --meta_path "./meta_file_hilab_vlm_train.json" \
  --overwrite_output_dir True \
   --force_image_size 448 \
   --max_dynamic_patch 12 \
@@ -45,13 +45,12 @@ torchrun \
   --vision_select_layer -1 \
   --dataloader_num_workers 4 \
   --bf16 True \
-  --num_train_epochs 1 \
+  --num_train_epochs 20 \
   --per_device_train_batch_size ${PER_DEVICE_BATCH_SIZE} \
   --gradient_accumulation_steps ${GRADIENT_ACC} \
   --evaluation_strategy "no" \
-  --save_strategy "steps" \
-  --save_steps 200 \
-  --save_total_limit 1 \
+  --save_strategy "epoch" \
+  --save_total_limit 5 \
   --learning_rate 1e-5 \
   --weight_decay 0.05 \
   --warmup_ratio 0.03 \
@@ -64,6 +63,5 @@ torchrun \
   --dynamic_image_size True \
   --use_thumbnail True \
   --ps_version 'v2' \
-  --deepspeed "zero_stage1_config.json" \
   --report_to "tensorboard" \
   2>&1 | tee -a "${OUTPUT_DIR}/training_log.txt"

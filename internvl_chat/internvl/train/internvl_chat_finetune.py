@@ -715,6 +715,19 @@ class LazySupervisedDataset(Dataset):
         for i in range(start_idx, len(self)):
             yield self[i]
 
+class SaveAtSpecificEpochsCallback(transformers.TrainerCallback):
+    """특정 에폭에서만 체크포인트를 저장하는 콜백"""
+    def __init__(self, save_epochs):
+        self.save_epochs = set(save_epochs)
+    
+    def on_epoch_end(self, args, state, control, **kwargs):
+        current_epoch = round(state.epoch)
+        logger.info(f"[SaveCallback] Epoch {current_epoch} ended. Should save: {current_epoch in self.save_epochs}")
+
+        if current_epoch in self.save_epochs:
+            control.should_save = True
+        else:
+            control.should_save = False
 
 def build_datasets(
     data_args,
@@ -1056,6 +1069,7 @@ def main():
     else:
         collator = concat_pad_data_collator
 
+    save_epochs_callback = SaveAtSpecificEpochsCallback(save_epochs=[3, 5, 10, 15, 20])
     trainer = Trainer(
         model=model,
         args=training_args,
@@ -1063,6 +1077,7 @@ def main():
         eval_dataset=None,
         tokenizer=tokenizer,
         data_collator=collator,
+        callbacks=[save_epochs_callback],
     )
 
     # Training
