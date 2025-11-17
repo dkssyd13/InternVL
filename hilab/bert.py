@@ -22,19 +22,6 @@ num_gpus = torch.cuda.device_count()
 assert num_gpus >= 2, f"At least 2 GPUs required, but only {num_gpus} GPU(s) available"
 logger.info(f'Found {num_gpus} GPU(s) available')
 
-# Load Base Model
-logger.info('Loading Base Model on GPU 0...')
-BASE_MODEL_NAME = "OpenGVLab/InternVL3-1B"
-base_model = AutoModel.from_pretrained(
-    BASE_MODEL_NAME,
-    torch_dtype=torch.bfloat16,
-    low_cpu_mem_usage=True,
-    trust_remote_code=True
-).eval().cuda(0)  # GPU 0
-
-base_tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL_NAME, trust_remote_code=True)
-logger.info('Base Model loaded successfully on GPU 0')
-
 # Helper Functions
 def build_transform(input_size=448):
     """Build transformation for video frames"""
@@ -172,7 +159,6 @@ if __name__ == "__main__":
                 raise FileNotFoundError(f"{path=} does not exist")
 
         FINE_TUNED_PREDICTIONS = []
-        BASE_PREDICTIONS = []
         REFERENCES = []
         SAMPLE_IDS = []
         VIDEO_NAMES = []
@@ -186,16 +172,20 @@ if __name__ == "__main__":
 
 
         # === 3. Load Model ===
-        logger.info('Loading Fine-Tuned Model on GPU 1...')
+        logger.info('Loading Fine-Tuned Model on GPU 0 and GPU 1...')
         fine_tuned_model = AutoModel.from_pretrained(
             str(MODEL_PATH),
             torch_dtype=torch.bfloat16,
             low_cpu_mem_usage=True,
             trust_remote_code=True
-        ).eval().cuda(1)  # GPU 1
+        ).eval()
+        
+        # Use DataParallel to distribute model across GPU 0 and GPU 1
+        fine_tuned_model = torch.nn.DataParallel(fine_tuned_model, device_ids=[0, 1])
+        fine_tuned_model = fine_tuned_model.cuda()
 
         fine_tuned_tokenizer = AutoTokenizer.from_pretrained(str(MODEL_PATH), trust_remote_code=True)
-        logger.info('Fine-Tuned Model loaded successfully on GPU 1')
+        logger.info('Fine-Tuned Model loaded successfully across GPU 0 and GPU 1')
         # ==============================
 
 
@@ -245,25 +235,14 @@ if __name__ == "__main__":
                     video_prefix = ''.join([f'Frame{i+1}: <image>\n' for i in range(len(num_patches_list))])
                     full_question = question.replace('<video>\n', video_prefix)
                     
-                    # Generate predictions from both models
+                    # Generate predictions from fine-tuned model
                     try:
                         with torch.no_grad():
-                            # Base model prediction (GPU 0)
-                            pixel_values_gpu0 = pixel_values.cuda(0)
-                            base_response = base_model.chat(
-                                base_tokenizer,
-                                pixel_values_gpu0,
-                                full_question,
-                                generation_config,
-                                num_patches_list=num_patches_list,
-                                history=None,
-                                return_history=False
-                            )
-                            # Fine-tuned model prediction (GPU 1)
-                            pixel_values_gpu1 = pixel_values.cuda(1)
-                            fine_tuned_response = fine_tuned_model.chat(
+                            # Fine-tuned model prediction (distributed across GPU 0 and GPU 1)
+                            pixel_values_cuda = pixel_values.cuda()
+                            fine_tuned_response = fine_tuned_model.module.chat(
                                 fine_tuned_tokenizer,
-                                pixel_values_gpu1,
+                                pixel_values_cuda,
                                 full_question,
                                 generation_config,
                                 num_patches_list=num_patches_list,
@@ -273,7 +252,6 @@ if __name__ == "__main__":
                             
                         
                         FINE_TUNED_PREDICTIONS.append(fine_tuned_response)
-                        BASE_PREDICTIONS.append(base_response)
                         REFERENCES.append(reference_answer)
                         SAMPLE_IDS.append(sample_id)
                         VIDEO_NAMES.append(video_file)
@@ -281,7 +259,7 @@ if __name__ == "__main__":
                     except Exception as e:
                         raise ValueError(f"Error generating prediction for sample {idx}: {e}")
 
-        logger.info(f'Generated {len(FINE_TUNED_PREDICTIONS)} predictions from each model')
+        logger.info(f'Generated {len(FINE_TUNED_PREDICTIONS)} predictions')
         # ==============================
 
 
@@ -310,32 +288,6 @@ if __name__ == "__main__":
         logger.info(f'  Precision: {ft_avg_precision:.4f}')
         logger.info(f'  Recall: {ft_avg_recall:.4f}')
         logger.info(f'  F1: {ft_avg_f1:.4f}')
-
-        # Calculate BERTScore for base model
-        logger.info('Calculating BERTScore for Base Model...')
-        base_P, base_R, base_F1 = score(  # type: ignore
-            BASE_PREDICTIONS,
-            REFERENCES,
-            lang='en',
-            verbose=True,
-            model_type='bert-base-uncased'
-        )
-
-        # Calculate average scores for base model
-        base_avg_precision = base_P.mean().item()  # type: ignore
-        base_avg_recall = base_R.mean().item()  # type: ignore
-        base_avg_f1 = base_F1.mean().item()  # type: ignore
-
-        logger.info('Base Model BERTScore Results:')
-        logger.info(f'  Precision: {base_avg_precision:.4f}')
-        logger.info(f'  Recall: {base_avg_recall:.4f}')
-        logger.info(f'  F1: {base_avg_f1:.4f}')
-
-        # Calculate improvement
-        logger.info('\nImprovement (Fine-tuned vs Base):')
-        logger.info(f'  Precision: {ft_avg_precision - base_avg_precision:+.4f}')
-        logger.info(f'  Recall: {ft_avg_recall - base_avg_recall:+.4f}')
-        logger.info(f'  F1: {ft_avg_f1 - base_avg_f1:+.4f}')
         # ==============================
 
 
@@ -350,15 +302,6 @@ if __name__ == "__main__":
                 'prediction': FINE_TUNED_PREDICTIONS[i]
             }
             for i in range(len(FINE_TUNED_PREDICTIONS))
-        ]
-
-        base_predictions_with_metadata = [
-            {
-                'id': SAMPLE_IDS[i],
-                'video': VIDEO_NAMES[i],
-                'prediction': BASE_PREDICTIONS[i]
-            }
-            for i in range(len(BASE_PREDICTIONS))
         ]
 
         references_with_metadata = [
@@ -381,16 +324,6 @@ if __name__ == "__main__":
             for i in range(len(SAMPLE_IDS))
         ]
 
-        base_per_sample_scores = [
-            {
-                'id': SAMPLE_IDS[i],
-                'precision': base_P[i].item(),  # type: ignore
-                'recall': base_R[i].item(),  # type: ignore
-                'f1': base_F1[i].item()  # type: ignore
-            }
-            for i in range(len(SAMPLE_IDS))
-        ]
-
         results = {
             'num_samples': len(FINE_TUNED_PREDICTIONS),
             'fine_tuned_model': {
@@ -401,20 +334,6 @@ if __name__ == "__main__":
                 },
                 'per_sample_scores': ft_per_sample_scores,
                 'predictions': fine_tuned_predictions_with_metadata
-            },
-            'base_model': {
-                'scores': {
-                    'precision': base_avg_precision,
-                    'recall': base_avg_recall,
-                    'f1': base_avg_f1
-                },
-                'per_sample_scores': base_per_sample_scores,
-                'predictions': base_predictions_with_metadata
-            },
-            'improvement': {
-                'precision': ft_avg_precision - base_avg_precision,
-                'recall': ft_avg_recall - base_avg_recall,
-                'f1': ft_avg_f1 - base_avg_f1
             },
             'references': references_with_metadata
         }
