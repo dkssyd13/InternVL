@@ -1,11 +1,12 @@
 import sys
+import math
 import json
 import torch
 import logging
 from pathlib import Path
 from PIL import Image
 from tqdm import tqdm
-from transformers import AutoModel, AutoTokenizer
+from transformers import AutoConfig, AutoModel, AutoTokenizer
 import torchvision.transforms as T
 from torchvision.transforms.functional import InterpolationMode
 
@@ -138,19 +139,40 @@ def load_jsonl(path):
             data.append(json.loads(line.strip()))
     return data
 
+def split_model(model_path):
+    device_map = {}
+    world_size = torch.cuda.device_count()
+    config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
+    num_layers = config.llm_config.num_hidden_layers
+    # Since the first GPU will be used for ViT, treat it as half a GPU.
+    num_layers_per_gpu = math.ceil(num_layers / (world_size - 0.5))
+    num_layers_per_gpu = [num_layers_per_gpu] * world_size
+    num_layers_per_gpu[0] = math.ceil(num_layers_per_gpu[0] * 0.5)
+    layer_cnt = 0
+    for i, num_layer in enumerate(num_layers_per_gpu):
+        for j in range(num_layer):
+            device_map[f'language_model.model.layers.{layer_cnt}'] = i
+            layer_cnt += 1
+    device_map['vision_model'] = 0
+    device_map['mlp1'] = 0
+    device_map['language_model.model.tok_embeddings'] = 0
+    device_map['language_model.model.embed_tokens'] = 0
+    device_map['language_model.output'] = 0
+    device_map['language_model.model.norm'] = 0
+    device_map['language_model.model.rotary_emb'] = 0
+    device_map['language_model.lm_head'] = 0
+    device_map[f'language_model.model.layers.{num_layers - 1}'] = 0
+
+    return device_map
 
 if __name__ == "__main__":
     # === 1. Initialize paths ===
-    MODELS_BASE_DIR = Path("../internvl_chat/work_dirs/internvl_chat_v3/internvl3_1b_dynamic_res_2nd_finetune_full")
+    MODELS_BASE_DIR = Path("../internvl_chat/work_dirs/internvl_chat_v3/internvl3_38b_dynamic_res_2nd_finetune_lora_merge")
     CHECKPOINTS = {
-        "epoch_3": MODELS_BASE_DIR / "checkpoint-3297",
-        "epoch_5": MODELS_BASE_DIR / "checkpoint-6595",
-        "epoch_10": MODELS_BASE_DIR / "checkpoint-9892",
-        "epoch_15": MODELS_BASE_DIR / "checkpoint-9892",  # 또는 정확한 checkpoint 번호
-        "epoch_20": MODELS_BASE_DIR / "checkpoint-13180",
+        "epoch_3": MODELS_BASE_DIR
     }
-    REFERENCE_DATA_PATH = Path("/storage/hdd1/internvl_data/playground/val_data")
-    REFERENCE_LABEL_PATH = Path("../internvl_chat/annotation/hilab_vlm_val.jsonl")
+    REFERENCE_DATA_PATH = Path("../internvl_chat/playground/test_data")
+    REFERENCE_LABEL_PATH = Path("../internvl_chat/playground/annotation/hilab_vlm_test.jsonl")
 
     for checkpoint_name, checkpoint_path in CHECKPOINTS.items():
         MODEL_PATH = checkpoint_path
@@ -176,13 +198,11 @@ if __name__ == "__main__":
         fine_tuned_model = AutoModel.from_pretrained(
             str(MODEL_PATH),
             torch_dtype=torch.bfloat16,
+            load_in_8bit=False,
             low_cpu_mem_usage=True,
-            trust_remote_code=True
-        ).eval()
-        
-        # Use DataParallel to distribute model across GPU 0 and GPU 1
-        fine_tuned_model = torch.nn.DataParallel(fine_tuned_model, device_ids=[0, 1])
-        fine_tuned_model = fine_tuned_model.cuda()
+            use_flash_attn=True,
+            trust_remote_code=True,
+            device_map=split_model(str(MODEL_PATH))).eval()
 
         fine_tuned_tokenizer = AutoTokenizer.from_pretrained(str(MODEL_PATH), trust_remote_code=True)
         logger.info('Fine-Tuned Model loaded successfully across GPU 0 and GPU 1')
@@ -198,11 +218,7 @@ if __name__ == "__main__":
 
         # === 5. Generate Predictions ===
         logger.info('Generating predictions...')
-        generation_config = dict(
-            max_new_tokens=512,
-            do_sample=False,
-            num_beams=1,
-        )
+        generation_config = dict(max_new_tokens=1024, do_sample=True)
 
         for idx, item in enumerate(tqdm(reference_data, desc="Processing videos")):
             video_file = item['video']
@@ -240,7 +256,7 @@ if __name__ == "__main__":
                         with torch.no_grad():
                             # Fine-tuned model prediction (distributed across GPU 0 and GPU 1)
                             pixel_values_cuda = pixel_values.cuda()
-                            fine_tuned_response = fine_tuned_model.module.chat(
+                            fine_tuned_response = fine_tuned_model.chat(
                                 fine_tuned_tokenizer,
                                 pixel_values_cuda,
                                 full_question,
@@ -249,6 +265,7 @@ if __name__ == "__main__":
                                 history=None,
                                 return_history=False
                             )
+                            logger.info(f"(Conversation {idx}) Fine-tuned response: {fine_tuned_response}")
                             
                         
                         FINE_TUNED_PREDICTIONS.append(fine_tuned_response)
